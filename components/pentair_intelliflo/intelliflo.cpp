@@ -63,7 +63,7 @@ bool Intelliflo::validate_received_message() {
 void Intelliflo::parse_packet(const std::vector<uint8_t> &data) {
   if (data.size() < 10) return;
 
-  // Check for Remote/Local ack packet
+  // Check for Remote/Local ack packet (data[3]=0xA5, data[4]=0x00, data[5]=0x10, data[6]=0x60, data[7]=0x04)
   if (data[3] == 0xA5 && data[4] == 0x00 && data[5] == 0x10 && data[6] == 0x60) {
     if (data[7] == 0x04 && data.size() >= 10) {
       if (data[9] == 0xFF) {
@@ -73,12 +73,12 @@ void Intelliflo::parse_packet(const std::vector<uint8_t> &data) {
       }
     }
   } 
-  // Check for Status Response packet (data[3]=0xA5, data[4]=0x60, data[5]=0x10, data[6]=0x07)
-  else if (data[3] == 0xA5 && data[4] == 0x60 && data[5] == 0x10 && data[6] == 0x07 && data.size() >= 16) {
+  // Check for Status Response packet (data[3]=0xA5, data[4]=0x00, data[5]=0x10, data[6]=0x60, data[7]=0x07)
+  else if (data[3] == 0xA5 && data[4] == 0x00 && data[5] == 0x10 && data[6] == 0x60 && data[7] == 0x07 && data.size() >= 17) {
     ESP_LOGI(TAG, "Received Pump Status Response");
 
     if (this->running_ != nullptr) {
-      if (data[8] == RUNNING || data[8] == 0x0A) {
+      if (data[9] == RUNNING || data[9] == 0x0A) {
         this->running_->publish_state(true);
       } else {
         this->running_->publish_state(false);
@@ -86,7 +86,7 @@ void Intelliflo::parse_packet(const std::vector<uint8_t> &data) {
     }
 
     if (this->program_ != nullptr) {
-      switch (data[9]) {
+      switch (data[10]) {
         case NO_PROG: this->program_->publish_state("Stopped"); break;
         case LOCAL1: this->program_->publish_state("Local 1"); break;
         case LOCAL2: this->program_->publish_state("Local 2"); break;
@@ -104,13 +104,13 @@ void Intelliflo::parse_packet(const std::vector<uint8_t> &data) {
     }
 
     if (this->power_ != nullptr)
-      this->power_->publish_state((data[10] * 256) + data[11]);
+      this->power_->publish_state((data[11] * 256) + data[12]);
     if (this->rpm_ != nullptr)
-      this->rpm_->publish_state((data[12] * 256) + data[13]);
+      this->rpm_->publish_state((data[13] * 256) + data[14]);
     if (this->flow_ != nullptr)
-      this->flow_->publish_state(data[14] * 0.227);
+      this->flow_->publish_state(data[15] * 0.227);
     if (this->pressure_ != nullptr)
-      this->pressure_->publish_state(data[15] / 14.504);
+      this->pressure_->publish_state(data[16] / 14.504);
   }
 }
 
