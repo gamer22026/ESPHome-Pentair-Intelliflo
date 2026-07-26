@@ -1,7 +1,6 @@
 #include "intelliflo.h"
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
-#include <cmath>
 
 namespace esphome {
 namespace intelliflo {
@@ -18,18 +17,27 @@ void Intelliflo::update() {
 }
 
 void Intelliflo::loop() {
+  uint32_t now = millis();
+
+  // Clear stale RX buffer if line was quiet for > 100ms mid-packet
+  if (!this->rx_buffer.empty() && (now - this->last_received_byte_millis > 100)) {
+    ESP_LOGV(TAG, "RX inter-byte timeout, resetting buffer");
+    this->rx_buffer.clear();
+  }
+
   while (this->available() > 0) {
     uint8_t c;
     this->read_byte(&c);
+    this->last_received_byte_millis = now;
     this->handle_received_byte(c);
   }
 
   // Send next command in queue if at least 150ms passed since last transmission
-  if (millis() - this->last_tx_millis_ > 150 && !this->tx_buffer.empty()) {
-    auto packet = this->tx_buffer.front();
+  if (now - this->last_tx_millis_ > 150 && !this->tx_buffer.empty()) {
+    const auto &packet = this->tx_buffer.front();
     this->send_array_cmd(packet.data(), packet.size());
     this->tx_buffer.pop();
-    this->last_tx_millis_ = millis();
+    this->last_tx_millis_ = now;
   }
 }
 
@@ -41,8 +49,10 @@ void Intelliflo::handle_received_byte(uint8_t c) {
 }
 
 bool Intelliflo::validate_received_message() {
+  if (this->rx_buffer.empty()) return false;
+
   uint32_t at = this->rx_buffer.size() - 1;
-  uint8_t *data = &this->rx_buffer[0];
+  uint8_t *data = this->rx_buffer.data();
 
   // Validate preamble sequence: FF 00 FF A5
   if (at == 0) return data[0] == 0xFF;
@@ -55,15 +65,21 @@ bool Intelliflo::validate_received_message() {
   uint8_t packet_size = data[8];
   uint32_t expected_length = packet_size + 11; // 3 preamble + 5 frame + 1 len + payload + 2 checksum
 
+  // Prevent runaway buffer allocation from noise-corrupted length byte
+  if (expected_length > 64) {
+    ESP_LOGW(TAG, "Corrupted packet length: %u, resetting buffer", expected_length);
+    return false;
+  }
+
   if (this->rx_buffer.size() < expected_length) return true;
 
   // Validate packet checksum
   uint16_t checksum = 0;
-  for (int j = 3; j < 3 + packet_size + 6; j++) {
+  for (size_t j = 3; j < 3 + packet_size + 6; j++) {
     checksum += data[j];
   }
 
-  uint16_t packet_checksum = (data[3 + 6 + packet_size] << 8) + data[3 + 7 + packet_size];
+  uint16_t packet_checksum = (data[3 + 6 + packet_size] << 8) | data[3 + 7 + packet_size];
   if (checksum != packet_checksum) {
     ESP_LOGW(TAG, "Checksum mismatch: calc 0x%04X vs packet 0x%04X", checksum, packet_checksum);
     return false; // reset buffer on checksum error
@@ -179,7 +195,7 @@ void Intelliflo::commandLocalProgram(int prog) {
 void Intelliflo::commandExternalProgram(int prog) {
   ESP_LOGI(TAG, "Command external program %d", prog);
   uint8_t pumpPowerPacket[] = {0xA5, 0x00, 0x60, 0x10, 0x01, 0x04, 0x03, 0x21, 0x00, 0x00};
-  pumpPowerPacket[9] = prog * 8;
+  pumpPowerPacket[9] = (prog * 8) & 0xFF;
   QueuePacket(pumpPowerPacket, 10);
 }
 
@@ -187,27 +203,33 @@ void Intelliflo::saveValueForProgram(int prog, int value) {
   ESP_LOGI(TAG, "saveValueForProgram %d: %d", prog, value);
   uint8_t pumpPowerPacket[] = {0xA5, 0x00, 0x60, 0x10, 0x01, 0x04, 0x03, 0, 0, 0};
   pumpPowerPacket[7] = 0x26 + prog;
-  pumpPowerPacket[8] = std::floor(value / 256.0);
-  pumpPowerPacket[9] = value % 256;
+  pumpPowerPacket[8] = (value >> 8) & 0xFF;
+  pumpPowerPacket[9] = value & 0xFF;
   QueuePacket(pumpPowerPacket, 10);
 }
 
 void Intelliflo::commandRPM(int rpm) {
   ESP_LOGI(TAG, "Command RPM: %d rpm", rpm);
   uint8_t pumpPowerPacket[] = {0xA5, 0x00, 0x60, 0x10, 0x0A, 0x04, 0x02, 0xC4, 0, 0};
-  pumpPowerPacket[8] = std::floor(rpm / 256.0);
-  pumpPowerPacket[9] = rpm % 256;
+  pumpPowerPacket[8] = (rpm >> 8) & 0xFF;
+  pumpPowerPacket[9] = rpm & 0xFF;
   QueuePacket(pumpPowerPacket, 10);
 }
 
 void Intelliflo::commandFlow(int flow) {
-  ESP_LOGI(TAG, "Command Flow: %.1f m3/h", ((double) flow) / 10);
-  uint8_t pumpPowerPacket[] = {0xA5, 0x00, 0x60, 0x10, 0x09, 0x04, 0x02, 0xC4, 0x00, 0};
-  pumpPowerPacket[9] = flow;
+  ESP_LOGI(TAG, "Command Flow: %.1f m3/h", ((double) flow) / 10.0);
+  uint8_t pumpPowerPacket[] = {0xA5, 0x00, 0x60, 0x10, 0x09, 0x04, 0x02, 0xC4, 0, 0};
+  pumpPowerPacket[8] = (flow >> 8) & 0xFF;
+  pumpPowerPacket[9] = flow & 0xFF;
   QueuePacket(pumpPowerPacket, 10);
 }
 
 void Intelliflo::QueuePacket(uint8_t message[], int messageLength) {
+  if (this->tx_buffer.size() >= 15) {
+    ESP_LOGW(TAG, "TX Queue full (15 items), dropping command to prevent heap bloat");
+    return;
+  }
+
   int checksum = 0;
   for (int j = 0; j < messageLength; j++) {
     checksum += message[j];
@@ -215,10 +237,10 @@ void Intelliflo::QueuePacket(uint8_t message[], int messageLength) {
 
   std::vector<uint8_t> packet = {0xFF, 0x00, 0xFF};
   packet.insert(packet.end(), message, message + messageLength);
-  packet.push_back(checksum >> 8);
+  packet.push_back((checksum >> 8) & 0xFF);
   packet.push_back(checksum & 0xFF);
 
-  tx_buffer.push(packet);
+  this->tx_buffer.push(std::move(packet));
 }
 
 }  // namespace intelliflo
