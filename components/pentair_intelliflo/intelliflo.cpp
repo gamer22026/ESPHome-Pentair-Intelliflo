@@ -53,9 +53,9 @@ bool Intelliflo::validate_received_message() {
   if (at <= 8) return true;
 
   uint8_t packet_size = data[8];
-  uint8_t length = (packet_size + 10);
+  uint32_t expected_length = packet_size + 11; // 3 preamble + 5 frame + 1 len + payload + 2 checksum
 
-  if (at < length) return true;
+  if (this->rx_buffer.size() < expected_length) return true;
 
   // Validate packet checksum
   uint16_t checksum = 0;
@@ -65,7 +65,7 @@ bool Intelliflo::validate_received_message() {
 
   uint16_t packet_checksum = (data[3 + 6 + packet_size] << 8) + data[3 + 7 + packet_size];
   if (checksum != packet_checksum) {
-    ESP_LOGW(TAG, "Checksum mismatch on received packet");
+    ESP_LOGW(TAG, "Checksum mismatch: calc 0x%04X vs packet 0x%04X", checksum, packet_checksum);
     return false; // reset buffer on checksum error
   }
 
