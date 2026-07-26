@@ -67,7 +67,7 @@ bool Intelliflo::validate_received_message() {
 
   // Prevent runaway buffer allocation from noise-corrupted length byte
   if (expected_length > 64) {
-    ESP_LOGW(TAG, "Corrupted packet length: %u, resetting buffer", expected_length);
+    ESP_LOGW(TAG, "Corrupted packet length: %lu, resetting buffer", (unsigned long) expected_length);
     return false;
   }
 
@@ -108,7 +108,7 @@ void Intelliflo::parse_packet(const std::vector<uint8_t> &data) {
     }
   } 
   // Check for Status Response packet (data[3]==0x60 && data[4]==0x07)
-  else if (data[3] == 0x60 && data[4] == 0x07 && data.size() >= 14) {
+  else if (data[3] == 0x60 && data[4] == 0x07 && data.size() >= 15) {
     ESP_LOGI(TAG, "Parsing Pump Status Response");
 
     if (this->running_ != nullptr) {
@@ -137,14 +137,19 @@ void Intelliflo::parse_packet(const std::vector<uint8_t> &data) {
       }
     }
 
+    // Exact Pentair Status Payload offsets:
+    // data[9] & data[10] = Power (Watts)
+    // data[11] & data[12] = Actual RPM
+    // data[13] = Flow (GPM / m3/h)
+    // data[14] = Pressure (PSI / Bar)
     if (this->power_ != nullptr)
-      this->power_->publish_state((data[8] * 256) + data[9]);
+      this->power_->publish_state((data[9] * 256) + data[10]);
     if (this->rpm_ != nullptr)
-      this->rpm_->publish_state((data[10] * 256) + data[11]);
+      this->rpm_->publish_state((data[11] * 256) + data[12]);
     if (this->flow_ != nullptr)
-      this->flow_->publish_state(data[12] * 0.227);
+      this->flow_->publish_state(data[13] * 0.227);
     if (this->pressure_ != nullptr)
-      this->pressure_->publish_state(data[13] / 14.504);
+      this->pressure_->publish_state(data[14] / 14.504);
   }
 }
 
@@ -188,7 +193,7 @@ void Intelliflo::stop() {
 void Intelliflo::commandLocalProgram(int prog) {
   ESP_LOGI(TAG, "Command local program %d", prog);
   uint8_t pumpPowerPacket[] = {0xA5, 0x00, 0x60, 0x10, 0x05, 0x01, 0};
-  pumpPowerPacket[6] = prog + 1;
+  pumpPowerPacket[6] = (prog + 1) & 0xFF;
   QueuePacket(pumpPowerPacket, 7);
 }
 
