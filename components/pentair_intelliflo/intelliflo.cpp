@@ -215,7 +215,9 @@ void Intelliflo::saveValueForProgram(int prog, int value) {
 
 void Intelliflo::commandRPM(int rpm) {
   ESP_LOGI(TAG, "Command RPM: %d rpm", rpm);
-  uint8_t pumpPowerPacket[] = {0xA5, 0x00, 0x60, 0x10, 0x0A, 0x04, 0x02, 0xC4, 0, 0};
+  // Real Pentair IntelliFlo VS Set RPM Packet:
+  // Command 0x01, Length 0x04, Sub-cmd 0x03, Parameter 0x27 (Set RPM Target)
+  uint8_t pumpPowerPacket[] = {0xA5, 0x00, 0x60, 0x10, 0x01, 0x04, 0x03, 0x27, 0, 0};
   pumpPowerPacket[8] = (rpm >> 8) & 0xFF;
   pumpPowerPacket[9] = rpm & 0xFF;
   QueuePacket(pumpPowerPacket, 10);
