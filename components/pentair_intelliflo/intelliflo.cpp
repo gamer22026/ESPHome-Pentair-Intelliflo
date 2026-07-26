@@ -44,41 +44,59 @@ bool Intelliflo::validate_received_message() {
   uint32_t at = this->rx_buffer.size() - 1;
   uint8_t *data = &this->rx_buffer[0];
 
+  // Validate preamble sequence: FF 00 FF A5
   if (at == 0) return data[0] == 0xFF;
   if (at == 1) return data[1] == 0x00;
   if (at == 2) return data[2] == 0xFF;
   if (at == 3) return data[3] == 0xA5;
 
   if (at <= 8) return true;
+
   uint8_t packet_size = data[8];
   uint8_t length = (packet_size + 10);
 
   if (at < length) return true;
 
-  // Complete packet arrived - parse it
-  this->parse_packet(this->rx_buffer);
-  return false; // reset buffer after complete packet
+  // Validate packet checksum
+  uint16_t checksum = 0;
+  for (int j = 3; j < 3 + packet_size + 6; j++) {
+    checksum += data[j];
+  }
+
+  uint16_t packet_checksum = (data[3 + 6 + packet_size] << 8) + data[3 + 7 + packet_size];
+  if (checksum != packet_checksum) {
+    ESP_LOGW(TAG, "Checksum mismatch on received packet");
+    return false; // reset buffer on checksum error
+  }
+
+  // Remove preamble FF 00 FF to get clean A5 packet
+  std::vector<uint8_t> clean_packet(this->rx_buffer.begin() + 3, this->rx_buffer.end());
+
+  std::string pretty_cmd = format_hex_pretty(clean_packet);
+  ESP_LOGI(TAG, "Package received: %s", pretty_cmd.c_str());
+
+  this->parse_packet(clean_packet);
+
+  return false; // reset buffer after processing complete packet
 }
 
 void Intelliflo::parse_packet(const std::vector<uint8_t> &data) {
-  if (data.size() < 10) return;
+  if (data.size() < 7) return;
 
-  // Check for Remote/Local ack packet (data[3]=0xA5, data[4]=0x00, data[5]=0x10, data[6]=0x60, data[7]=0x04)
-  if (data[3] == 0xA5 && data[4] == 0x00 && data[5] == 0x10 && data[6] == 0x60) {
-    if (data[7] == 0x04 && data.size() >= 10) {
-      if (data[9] == 0xFF) {
-        ESP_LOGI(TAG, "Pump is in REMOTE control mode");
-      } else if (data[9] == 0x00) {
-        ESP_LOGI(TAG, "Pump is in LOCAL control mode");
-      }
+  // Check for Remote/Local control ack packet (data[3]==0x60 && data[4]==0x04)
+  if (data[3] == 0x60 && data[4] == 0x04 && data.size() >= 7) {
+    if (data[6] == 0xFF) {
+      ESP_LOGI(TAG, "Pump is in REMOTE control mode");
+    } else if (data[6] == 0x00) {
+      ESP_LOGI(TAG, "Pump is in LOCAL control mode");
     }
   } 
-  // Check for Status Response packet (data[3]=0xA5, data[4]=0x00, data[5]=0x10, data[6]=0x60, data[7]=0x07)
-  else if (data[3] == 0xA5 && data[4] == 0x00 && data[5] == 0x10 && data[6] == 0x60 && data[7] == 0x07 && data.size() >= 17) {
-    ESP_LOGI(TAG, "Received Pump Status Response");
+  // Check for Status Response packet (data[3]==0x60 && data[4]==0x07)
+  else if (data[3] == 0x60 && data[4] == 0x07 && data.size() >= 14) {
+    ESP_LOGI(TAG, "Parsing Pump Status Response");
 
     if (this->running_ != nullptr) {
-      if (data[9] == RUNNING || data[9] == 0x0A) {
+      if (data[6] == RUNNING || data[6] == 0x0A) {
         this->running_->publish_state(true);
       } else {
         this->running_->publish_state(false);
@@ -86,7 +104,7 @@ void Intelliflo::parse_packet(const std::vector<uint8_t> &data) {
     }
 
     if (this->program_ != nullptr) {
-      switch (data[10]) {
+      switch (data[7]) {
         case NO_PROG: this->program_->publish_state("Stopped"); break;
         case LOCAL1: this->program_->publish_state("Local 1"); break;
         case LOCAL2: this->program_->publish_state("Local 2"); break;
@@ -104,13 +122,13 @@ void Intelliflo::parse_packet(const std::vector<uint8_t> &data) {
     }
 
     if (this->power_ != nullptr)
-      this->power_->publish_state((data[11] * 256) + data[12]);
+      this->power_->publish_state((data[8] * 256) + data[9]);
     if (this->rpm_ != nullptr)
-      this->rpm_->publish_state((data[13] * 256) + data[14]);
+      this->rpm_->publish_state((data[10] * 256) + data[11]);
     if (this->flow_ != nullptr)
-      this->flow_->publish_state(data[15] * 0.227);
+      this->flow_->publish_state(data[12] * 0.227);
     if (this->pressure_ != nullptr)
-      this->pressure_->publish_state(data[16] / 14.504);
+      this->pressure_->publish_state(data[13] / 14.504);
   }
 }
 
