@@ -18,12 +18,21 @@ external_components:
     refresh: 0s
 ```
 
-Add these to `/config/esphome/secrets.yaml` (generate the API key with
-`openssl rand -base64 32`):
+The only secrets this config needs are `wifi_ssid` and `wifi_password` — the two
+the ESPHome dashboard already sets up. Nothing else to add.
+
+The API is unencrypted and OTA has no password, which keeps the secret list to
+those two. To harden either one, add a key to your ESPHome secrets and uncomment
+the relevant line in the YAML:
 
 ```yaml
-wifi_ssid, wifi_password, pool_pump_api_key,
-pool_pump_ota_password, pool_pump_ap_password
+api:
+  encryption:
+    key: !secret pool_pump_api_key      # openssl rand -base64 32
+
+ota:
+  - platform: esphome
+    password: !secret pool_pump_ota_password
 ```
 
 Verified against ESPHome 2026.7.2 — `esphome config` and `esphome compile` both
